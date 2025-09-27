@@ -1,4 +1,3 @@
-# main.py
 import streamlit as st
 import pandas as pd
 import json
@@ -6,6 +5,10 @@ import os
 import time
 from datetime import datetime, timedelta
 import pytz
+from dotenv import load_dotenv
+
+# Load .env
+load_dotenv()
 
 from config import DATA_PROVIDER, NIFTY50, TOTAL_CAPITAL, STOP_LOSS_PERCENT, PARTIAL_SELL_PERCENT, TIMEZONE, TELEGRAM_BOT_TOKEN
 from utils import fetch_and_analyze, send_telegram_message, auto_add_new_chats, load_chat_ids
@@ -129,7 +132,7 @@ with col1:
     1. Keep this app open at market open (9:15–10:00 IST). App will analyze intraday 1m bars and compute a composite score.
     2. At 10:00 it will show final ranked buy ideas (top -> highest priority). Manually click buys on sidebar to enter buys.
     3. Portfolio is manual — app only tracks and advises + sends Telegram alerts on sell/stop-loss.
-    4. For full real-time websocket, get a broker API (Upstox/Fyers/Zerodha) or Finnhub paid plan — then flip DATA_PROVIDER in config.py.
+   
     """)
 
 # --------------------
@@ -190,7 +193,6 @@ for sym in list(portfolio.keys()):
     entry_price = entry['entry_price']
     change_pct = (current_price - entry_price)/entry_price*100
 
-    # Skip alert if future potential is positive (avoids premature sell)
     if row['future_potential'] > 0 and row['signal'] in ["SELL", "STRONG SELL"]:
         continue
 

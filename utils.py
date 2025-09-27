@@ -1,31 +1,25 @@
 import pandas as pd
 import numpy as np
-import datetime as dt
 import pytz
 import requests
-import time
 import json
 import os
-
-# indicators (ta)
 import ta
 import yfinance as yf
 
 from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 
 IST = pytz.timezone(TIMEZONE)
+CHAT_IDS_FILE = "chat_ids.json"
 
 # ---------------------------
 # TELEGRAM
 # ---------------------------
-CHAT_IDS_FILE = "chat_ids.json"
-
 def load_chat_ids():
-    # load persistent chat IDs if file exists
     if os.path.exists(CHAT_IDS_FILE):
         with open(CHAT_IDS_FILE, "r") as f:
             ids = json.load(f)
-            return list(set(ids + TELEGRAM_CHAT_IDS))  # merge with hardcoded
+            return list(set(ids + TELEGRAM_CHAT_IDS))
     return TELEGRAM_CHAT_IDS.copy()
 
 def save_chat_ids(ids):
@@ -65,7 +59,7 @@ def send_telegram_message(bot_token, message, chat_ids=None):
             print("Telegram send failed to", chat_id, e)
 
 # ---------------------------
-# DATA FETCHER (yfinance)
+# YFINANCE DATA
 # ---------------------------
 def fetch_intraday_yfinance(symbol, period="1d", interval="1m"):
     try:
@@ -211,7 +205,7 @@ def classify_signal(score, df):
     return "SELL"
 
 # ---------------------------
-# HELPER WRAPPERS
+# HELPER WRAPPER
 # ---------------------------
 def fetch_and_analyze(symbol_yf, trend_minutes=30):
     df = fetch_intraday_yfinance(symbol_yf, period="1d", interval="1m")
@@ -221,14 +215,13 @@ def fetch_and_analyze(symbol_yf, trend_minutes=30):
     score = score_stock(df)
     signal = classify_signal(score, df)
 
-    # future potential (% change over last trend_minutes)
     if len(df) > trend_minutes:
         past_price = df['close'].iloc[-trend_minutes]
         future_potential = (df['close'].iloc[-1] - past_price) / past_price * 100
     else:
         future_potential = 0.0
 
-    out = {
+    return {
         "symbol": symbol_yf,
         "score": score,
         "signal": signal,
@@ -237,4 +230,3 @@ def fetch_and_analyze(symbol_yf, trend_minutes=30):
         "future_potential": future_potential,
         "df": df
     }
-    return out
