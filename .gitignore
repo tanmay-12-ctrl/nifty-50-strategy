@@ -1,2 +1,4 @@
-.env.env
+.env
+__pycache__/
 daily_csv/
+chat_ids.json
