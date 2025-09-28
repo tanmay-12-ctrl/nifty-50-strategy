@@ -2,3 +2,4 @@
 __pycache__/
 daily_csv/
 chat_ids.json
+.env
