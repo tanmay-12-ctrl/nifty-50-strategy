@@ -41,9 +41,7 @@ portfolio = load_portfolio()
 # Utility functions
 # --------------------
 def calculate_used_and_left(portfolio):
-    used = 0.0
-    for sym, entry in portfolio.items():
-        used += entry['entry_price'] * entry['quantity']
+    used = sum(entry['entry_price'] * entry['quantity'] for entry in portfolio.values())
     left = TOTAL_CAPITAL - used
     return used, left
 
@@ -56,6 +54,7 @@ st.sidebar.title("Manual Buy / Portfolio")
 st.sidebar.markdown(f"Total capital: ₹{TOTAL_CAPITAL:,}")
 st.sidebar.markdown(f"Used: ₹{used_capital:,.2f}   —   Left: ₹{left_capital:,.2f}")
 
+# Manual Buy
 symbol_choice = st.sidebar.selectbox("Select stock to BUY", NIFTY50)
 buy_price = st.sidebar.number_input("Buy price (₹)", min_value=0.0, format="%.2f")
 buy_qty = st.sidebar.number_input("Quantity", min_value=0, step=1, value=0)
@@ -76,7 +75,7 @@ if st.sidebar.button("Enter Buy"):
         save_portfolio(portfolio)
         st.sidebar.success(f"Saved buy: {ticker} @ {buy_price} x {buy_qty}")
 
-# Manual sell
+# Manual Sell
 st.sidebar.header("Manual Sell / Reduce")
 sell_symbol = st.sidebar.selectbox("Symbol to sell (from portfolio)", options=[""] + list(portfolio.keys()))
 sell_qty = st.sidebar.number_input("Sell quantity (positive int)", min_value=0, step=1, value=0, key="sell_qty")
@@ -102,7 +101,7 @@ st.sidebar.header("Auto-refresh")
 auto_refresh = st.sidebar.checkbox("Enable auto refresh (app updates every interval)")
 refresh_interval = st.sidebar.number_input("Interval (seconds)", min_value=5, value=30, step=5)
 if auto_refresh:
-    count = st_autorefresh(interval=refresh_interval*1000, key="autorefresh")
+    st_autorefresh(interval=refresh_interval*1000, key="autorefresh")
 
 # --------------------
 # Auto-add Telegram chat IDs
@@ -115,7 +114,6 @@ TELEGRAM_CHAT_IDS = auto_add_new_chats()
 st.title("🔥 Nifty50 Analyzer + 10-Day Forecast + CSV Export 🔥")
 
 col1, col2 = st.columns([2,1])
-
 with col2:
     st.subheader("Portfolio")
     st.write(portfolio)
@@ -143,14 +141,11 @@ forecast_data = {}
 
 symbols = [s + ".NS" for s in NIFTY50]
 total = len(symbols)
-i = 0
-
 today_date = datetime.now(IST).strftime("%Y-%m-%d")
 CSV_DIR = "daily_csv"
 os.makedirs(CSV_DIR, exist_ok=True)
 
-for sym in symbols:
-    i += 1
+for i, sym in enumerate(symbols, 1):
     progress.progress(int(i*100/total))
     try:
         info = fetch_and_analyze(sym, trend_minutes=30, forecast_days=10)
@@ -173,27 +168,35 @@ for sym in symbols:
 
         results.append({
             "symbol": sym,
-            "score": info['score'],
-            "signal": info['signal'],
-            "price": info['current_price'],
-            "future_potential": info['future_potential'],
-            "datetime": info['datetime'],
+            "score": info.get('score', None),
+            "signal": info.get('signal', None),
+            "price": info.get('current_price', None),
+            "future_potential": info.get('future_potential', None),
+            "datetime": info.get('datetime', None),
             "in_portfolio": in_port,
             "entry_price": entry_price,
             "qty": qty,
             "pl": pl
         })
     except Exception as e:
-        print("error analyzing", sym, e)
+        print(f"Error analyzing {sym}: {e}")
     time.sleep(0.2)
 
-df_res = pd.DataFrame(results).sort_values("score", ascending=False).reset_index(drop=True)
+# --------------------
+# Safe DataFrame creation
+# --------------------
+valid_results = [r for r in results if r.get("score") is not None]
+if valid_results:
+    df_res = pd.DataFrame(valid_results).sort_values("score", ascending=False).reset_index(drop=True)
+else:
+    df_res = pd.DataFrame()
+    st.warning("No valid stock data available. Check API or data provider.")
 
 # --------------------
 # Send Top 10 Buys to Telegram at 10 AM
 # --------------------
 current_time = datetime.now(IST)
-if current_time.hour == 10 and current_time.minute < 5:  # send between 10:00-10:05
+if not df_res.empty and current_time.hour == 10 and current_time.minute < 5:
     top_10 = df_res.head(10)
     msg = "🔥 Top 10 Buys Today 🔥\n\n"
     for idx, row in top_10.iterrows():
@@ -204,10 +207,13 @@ if current_time.hour == 10 and current_time.minute < 5:  # send between 10:00-10
 # Display Top 10 Buys on Streamlit
 # --------------------
 st.subheader("Top priority to BUY (today, by composite score)")
-st.table(df_res.head(10)[["symbol","price","score","signal"]])
+if not df_res.empty:
+    st.table(df_res.head(10)[["symbol","price","score","signal"]])
+else:
+    st.info("No valid stock data to display.")
 
 # --------------------
-# 10-Day Forecast display (fixed)
+# 10-Day Forecast display
 # --------------------
 st.subheader("📈 10-Day Forecast (% change) per stock")
 for sym, forecast in forecast_data.items():
@@ -237,6 +243,8 @@ for sym, df_stock in all_data.items():
 st.subheader("Sell / Stop-loss Alerts for your portfolio")
 alerts = []
 for sym in list(portfolio.keys()):
+    if df_res.empty:
+        continue
     row = df_res[df_res['symbol']==sym]
     if row.empty:
         continue
