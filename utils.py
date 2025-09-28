@@ -12,9 +12,7 @@ from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 IST = pytz.timezone(TIMEZONE)
 CHAT_IDS_FILE = "chat_ids.json"
 
-# ---------------------------
-# TELEGRAM
-# ---------------------------
+# --------------------------- TELEGRAM ---------------------------
 def load_chat_ids():
     if os.path.exists(CHAT_IDS_FILE):
         with open(CHAT_IDS_FILE, "r") as f:
@@ -58,15 +56,14 @@ def send_telegram_message(bot_token, message, chat_ids=None):
         except Exception as e:
             print("Telegram send failed to", chat_id, e)
 
-# ---------------------------
-# YFINANCE DATA
-# ---------------------------
+# --------------------------- YFINANCE DATA ---------------------------
 def fetch_intraday_yfinance(symbol, period="1d", interval="1m"):
     try:
         df = yf.download(tickers=symbol, period=period, interval=interval, progress=False)
         if df is None or df.empty:
             return None
-        df = df.tz_convert(TIMEZONE) if df.index.tzinfo or df.index.tz else df
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
         df = df.reset_index()
         df.rename(columns={
             "Datetime": "datetime", "Open": "open", "High": "high",
@@ -79,9 +76,31 @@ def fetch_intraday_yfinance(symbol, period="1d", interval="1m"):
         print("yfinance fetch error", symbol, e)
         return None
 
-# ---------------------------
-# INDICATORS
-# ---------------------------
+# --------------------------- FUNDAMENTALS ---------------------------
+def fetch_fundamentals(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        return {
+            "PE_ratio": info.get("trailingPE", np.nan),
+            "EPS": info.get("trailingEps", np.nan),
+            "Market_Cap": info.get("marketCap", np.nan),
+            "Dividend_Yield": info.get("dividendYield", np.nan),
+            "PB_ratio": info.get("priceToBook", np.nan),
+            "PEG_ratio": info.get("pegRatio", np.nan),
+        }
+    except Exception as e:
+        print("Error fetching fundamentals", symbol, e)
+        return {
+            "PE_ratio": np.nan,
+            "EPS": np.nan,
+            "Market_Cap": np.nan,
+            "Dividend_Yield": np.nan,
+            "PB_ratio": np.nan,
+            "PEG_ratio": np.nan,
+        }
+
+# --------------------------- INDICATORS ---------------------------
 def compute_vwap(df):
     tp = (df['high'] + df['low'] + df['close']) / 3
     vwap = (tp * df['volume']).cumsum() / df['volume'].cumsum()
@@ -115,9 +134,7 @@ def calculate_indicators(df):
         print("Indicator calc error:", e)
     return df
 
-# ---------------------------
-# COMPOSITE SCORE + SIGNAL
-# ---------------------------
+# --------------------------- SCORING + SIGNAL ---------------------------
 def score_stock(df):
     latest = df.iloc[-1]
     score = 0
@@ -204,14 +221,32 @@ def classify_signal(score, df):
         return "HOLD"
     return "SELL"
 
-# ---------------------------
-# HELPER WRAPPER
-# ---------------------------
-def fetch_and_analyze(symbol_yf, trend_minutes=30):
+# --------------------------- 10-DAY FUTURE POTENTIAL ---------------------------
+def compute_future_potential(df, days=10):
+    latest_price = df['close'].iloc[-1]
+    if len(df) < 2:
+        return {i+1: 0.0 for i in range(days)}
+
+    recent_change = (df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0]
+    daily_change = recent_change  # 1-day intraday projection
+    future = {}
+    cum_change = 0.0
+    for i in range(days):
+        cum_change += daily_change
+        future[i+1] = cum_change * 100
+    return future
+
+# --------------------------- HELPER WRAPPER ---------------------------
+def fetch_and_analyze(symbol_yf, trend_minutes=30, forecast_days=10):
     df = fetch_intraday_yfinance(symbol_yf, period="1d", interval="1m")
     if df is None or df.empty:
         return None
+
     df = calculate_indicators(df)
+    fundamentals = fetch_fundamentals(symbol_yf)
+    for k, v in fundamentals.items():
+        df[k] = v  # Add fundamentals to every row (optional)
+
     score = score_stock(df)
     signal = classify_signal(score, df)
 
@@ -221,6 +256,8 @@ def fetch_and_analyze(symbol_yf, trend_minutes=30):
     else:
         future_potential = 0.0
 
+    future_10_days = compute_future_potential(df, days=forecast_days)
+
     return {
         "symbol": symbol_yf,
         "score": score,
@@ -228,5 +265,7 @@ def fetch_and_analyze(symbol_yf, trend_minutes=30):
         "current_price": float(df['close'].iloc[-1]),
         "datetime": str(df['datetime'].iloc[-1]),
         "future_potential": future_potential,
-        "df": df
+        "future_10_days": future_10_days,
+        "df": df,
+        "fundamentals": fundamentals
     }

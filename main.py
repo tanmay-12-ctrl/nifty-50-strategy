@@ -17,7 +17,6 @@ from utils import fetch_and_analyze, send_telegram_message, auto_add_new_chats, 
 from streamlit_autorefresh import st_autorefresh
 
 IST = pytz.timezone(TIMEZONE)
-
 st.set_page_config(page_title="Nifty50 Trading Assistant", layout="wide")
 
 # --------------------
@@ -51,7 +50,7 @@ def calculate_used_and_left(portfolio):
 used_capital, left_capital = calculate_used_and_left(portfolio)
 
 # --------------------
-# Sidebar: manual buy
+# Sidebar: manual buy/sell
 # --------------------
 st.sidebar.title("Manual Buy / Portfolio")
 st.sidebar.markdown(f"Total capital: ₹{TOTAL_CAPITAL:,}")
@@ -77,9 +76,7 @@ if st.sidebar.button("Enter Buy"):
         save_portfolio(portfolio)
         st.sidebar.success(f"Saved buy: {ticker} @ {buy_price} x {buy_qty}")
 
-# --------------------
 # Manual sell
-# --------------------
 st.sidebar.header("Manual Sell / Reduce")
 sell_symbol = st.sidebar.selectbox("Symbol to sell (from portfolio)", options=[""] + list(portfolio.keys()))
 sell_qty = st.sidebar.number_input("Sell quantity (positive int)", min_value=0, step=1, value=0, key="sell_qty")
@@ -108,14 +105,14 @@ if auto_refresh:
     count = st_autorefresh(interval=refresh_interval*1000, key="autorefresh")
 
 # --------------------
-# Auto-add new Telegram chat IDs
+# Auto-add Telegram chat IDs
 # --------------------
 TELEGRAM_CHAT_IDS = auto_add_new_chats()
 
 # --------------------
 # Main UI
 # --------------------
-st.title("🔥 Nifty50 Live Analyzer — Open 9:15–10:00 analyze / Rank / Monitor 🔥")
+st.title("🔥 Nifty50 Analyzer + 10-Day Forecast + CSV Export 🔥")
 
 col1, col2 = st.columns([2,1])
 
@@ -129,33 +126,51 @@ with col2:
 with col1:
     st.subheader("Instructions")
     st.markdown("""
-    1. Keep this app open at market open (9:15–10:00 IST). App will analyze intraday 1m bars and compute a composite score.
-    2. At 10:00 it will show final ranked buy ideas (top -> highest priority). Manually click buys on sidebar to enter buys.
-    3. Portfolio is manual — app only tracks and advises + sends Telegram alerts on sell/stop-loss.
-   
+    1. App fetches previous day’s data if market closed or live data if open.
+    2. Computes indicators, composite score, and generates signals.
+    3. Shows 10-day projected % changes per stock.
+    4. Generates daily CSV per stock. Download for offline analysis.
     """)
 
 # --------------------
-# Analysis loop
+# Analysis loop + CSV export
 # --------------------
-st.subheader("Live scan & scoring (all NIFTY50)")
+st.subheader("Live / Historical scan & scoring (all NIFTY50)")
 progress = st.progress(0)
 results = []
-symbols = [s + ".NS" for s in NIFTY50]
+all_data = {}
+forecast_data = {}
 
+symbols = [s + ".NS" for s in NIFTY50]
 total = len(symbols)
 i = 0
+
+today_date = datetime.now(IST).strftime("%Y-%m-%d")
+CSV_DIR = "daily_csv"
+os.makedirs(CSV_DIR, exist_ok=True)
+
 for sym in symbols:
     i += 1
     progress.progress(int(i*100/total))
     try:
-        info = fetch_and_analyze(sym)
+        info = fetch_and_analyze(sym, trend_minutes=30, forecast_days=10)
         if info is None:
             continue
+
+        # store raw df for CSV
+        df_stock = info['df']
+        all_data[sym] = df_stock
+        df_stock.to_csv(f"{CSV_DIR}/{sym}_{today_date}.csv", index=False)
+
+        # store 10-day forecast
+        forecast_data[sym] = info.get('future_10_days', {})
+
+        # portfolio calculations
         in_port = sym in portfolio
         entry_price = portfolio[sym]['entry_price'] if in_port else None
         qty = portfolio[sym]['quantity'] if in_port else None
         pl = (info['current_price'] - entry_price) * qty if in_port and entry_price else None
+
         results.append({
             "symbol": sym,
             "score": info['score'],
@@ -173,10 +188,48 @@ for sym in symbols:
     time.sleep(0.2)
 
 df_res = pd.DataFrame(results).sort_values("score", ascending=False).reset_index(drop=True)
-st.dataframe(df_res)
 
+# --------------------
+# Send Top 10 Buys to Telegram at 10 AM
+# --------------------
+current_time = datetime.now(IST)
+if current_time.hour == 10 and current_time.minute < 5:  # send between 10:00-10:05
+    top_10 = df_res.head(10)
+    msg = "🔥 Top 10 Buys Today 🔥\n\n"
+    for idx, row in top_10.iterrows():
+        msg += f"{idx+1}. {row['symbol']} | Price: ₹{row['price']:.2f} | Score: {row['score']:.2f} | Signal: {row['signal']}\n"
+    send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
+
+# --------------------
+# Display Top 10 Buys on Streamlit
+# --------------------
 st.subheader("Top priority to BUY (today, by composite score)")
-st.table(df_res.head(10)[["symbol","score","signal","price"]])
+st.table(df_res.head(10)[["symbol","price","score","signal"]])
+
+# --------------------
+# 10-Day Forecast display (fixed)
+# --------------------
+st.subheader("📈 10-Day Forecast (% change) per stock")
+for sym, forecast in forecast_data.items():
+    st.markdown(f"**{sym}**")
+    if forecast:
+        days = sorted(forecast.keys())
+        forecast_df = pd.DataFrame({
+            "Day": [f"Day {d}" for d in days],
+            "% Change": [forecast[d] for d in days]
+        })
+        st.table(forecast_df)
+    else:
+        st.info("No forecast available")
+
+# --------------------
+# CSV download
+# --------------------
+st.subheader("Download CSV of fetched data")
+for sym, df_stock in all_data.items():
+    csv_name = f"{sym}_{today_date}.csv"
+    csv_data = df_stock.to_csv(index=False).encode('utf-8')
+    st.download_button(label=f"Download {csv_name}", data=csv_data, file_name=csv_name, mime='text/csv')
 
 # --------------------
 # SELL / Stop-loss alerts
@@ -211,20 +264,6 @@ if alerts:
 else:
     st.success("No immediate sell alerts")
 
-# --------------------
-# Lock top recommendations post 10:00
-# --------------------
-now = datetime.now(IST)
-market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-market_close_analysis = now.replace(hour=10, minute=0, second=0, microsecond=0)
-if market_open <= now <= market_close_analysis:
-    st.info("Market open analysis window: collecting data between 9:15–10:00. Top list updates in real time.")
-elif now > market_close_analysis and (now - market_close_analysis) < timedelta(minutes=60):
-    st.success("Final recommendations for today (post 10:00):")
-    st.table(df_res.head(20)[["symbol","score","signal","price"]])
-
-# --------------------
 # Footer
-# --------------------
 st.markdown("---")
-st.caption("Data provider: YFinance (default). For true websockets and guaranteed real-time, switch to a broker API and set DATA_PROVIDER in config.py accordingly.")
+st.caption("Data provider: YFinance. CSV per day saved in 'daily_csv' folder.")
