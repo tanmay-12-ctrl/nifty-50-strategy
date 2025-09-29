@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 
@@ -11,11 +11,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import DATA_PROVIDER, NIFTY50, TOTAL_CAPITAL, STOP_LOSS_PERCENT, PARTIAL_SELL_PERCENT, TIMEZONE, TELEGRAM_BOT_TOKEN
-from utils import fetch_and_analyze, send_telegram_message, auto_add_new_chats, load_chat_ids
+from utils import fetch_and_analyze, send_telegram_message, auto_add_new_chats
 
 # Auto-refresh
 from streamlit_autorefresh import st_autorefresh
 
+# --------------------
+# Config
+# --------------------
 IST = pytz.timezone(TIMEZONE)
 st.set_page_config(page_title="Nifty50 Trading Assistant", layout="wide")
 
@@ -37,9 +40,6 @@ def save_portfolio(p):
 
 portfolio = load_portfolio()
 
-# --------------------
-# Utility functions
-# --------------------
 def calculate_used_and_left(portfolio):
     used = sum(entry['entry_price'] * entry['quantity'] for entry in portfolio.values())
     left = TOTAL_CAPITAL - used
@@ -51,8 +51,8 @@ used_capital, left_capital = calculate_used_and_left(portfolio)
 # Sidebar: manual buy/sell
 # --------------------
 st.sidebar.title("Manual Buy / Portfolio")
-st.sidebar.markdown(f"Total capital: ₹{TOTAL_CAPITAL:,}")
-st.sidebar.markdown(f"Used: ₹{used_capital:,.2f}   —   Left: ₹{left_capital:,.2f}")
+st.sidebar.markdown(f"💰 Total capital: ₹{TOTAL_CAPITAL:,}")
+st.sidebar.markdown(f"📊 Used: ₹{used_capital:,.2f}   —   Left: ₹{left_capital:,.2f}")
 
 # Manual Buy
 symbol_choice = st.sidebar.selectbox("Select stock to BUY", NIFTY50)
@@ -63,9 +63,9 @@ if st.sidebar.button("Enter Buy"):
     invest = buy_price * buy_qty
     _, left_now = calculate_used_and_left(portfolio)
     if invest > left_now + 1e-6:
-        st.sidebar.error("Insufficient capital to buy this quantity at this price.")
+        st.sidebar.error("❌ Insufficient capital to buy this quantity.")
     elif buy_qty <= 0:
-        st.sidebar.error("Enter quantity > 0")
+        st.sidebar.error("❌ Enter quantity > 0")
     else:
         portfolio[ticker] = {
             "entry_price": float(buy_price),
@@ -73,12 +73,12 @@ if st.sidebar.button("Enter Buy"):
             "datetime": datetime.now(IST).isoformat()
         }
         save_portfolio(portfolio)
-        st.sidebar.success(f"Saved buy: {ticker} @ {buy_price} x {buy_qty}")
+        st.sidebar.success(f"✅ Saved buy: {ticker} @ {buy_price} x {buy_qty}")
 
 # Manual Sell
 st.sidebar.header("Manual Sell / Reduce")
-sell_symbol = st.sidebar.selectbox("Symbol to sell (from portfolio)", options=[""] + list(portfolio.keys()))
-sell_qty = st.sidebar.number_input("Sell quantity (positive int)", min_value=0, step=1, value=0, key="sell_qty")
+sell_symbol = st.sidebar.selectbox("Symbol to sell", options=[""] + list(portfolio.keys()))
+sell_qty = st.sidebar.number_input("Sell quantity", min_value=0, step=1, value=0, key="sell_qty")
 sell_price = st.sidebar.number_input("Sell price (₹)", min_value=0.0, format="%.2f", key="sell_price")
 if st.sidebar.button("Enter Sell"):
     if sell_symbol == "":
@@ -92,13 +92,13 @@ if st.sidebar.button("Enter Sell"):
         if portfolio[sell_symbol]['quantity'] == 0:
             del portfolio[sell_symbol]
         save_portfolio(portfolio)
-        st.sidebar.success(f"Sold {sell_qty} of {sell_symbol} at {sell_price}")
+        st.sidebar.success(f"✅ Sold {sell_qty} of {sell_symbol} at {sell_price}")
 
 # --------------------
 # Auto-refresh
 # --------------------
 st.sidebar.header("Auto-refresh")
-auto_refresh = st.sidebar.checkbox("Enable auto refresh (app updates every interval)")
+auto_refresh = st.sidebar.checkbox("Enable auto refresh")
 refresh_interval = st.sidebar.number_input("Interval (seconds)", min_value=5, value=30, step=5)
 if auto_refresh:
     st_autorefresh(interval=refresh_interval*1000, key="autorefresh")
@@ -111,9 +111,9 @@ TELEGRAM_CHAT_IDS = auto_add_new_chats()
 # --------------------
 # Main UI
 # --------------------
-st.title("🔥 Nifty50 Analyzer + 10-Day Forecast + CSV Export 🔥")
+st.title("🔥 Nifty50 Analyzer + Forecast + Alerts 🔥")
 
-col1, col2 = st.columns([2,1])
+col1, col2 = st.columns([2, 1])
 with col2:
     st.subheader("Portfolio")
     st.write(portfolio)
@@ -124,20 +124,18 @@ with col2:
 with col1:
     st.subheader("Instructions")
     st.markdown("""
-    1. App fetches previous day’s data if market closed or live data if open.
-    2. Computes indicators, composite score, and generates signals.
-    3. Shows 10-day projected % changes per stock.
-    4. Generates daily CSV per stock. Download for offline analysis.
+    - Fetches live or last close data
+    - Computes indicators, score & signals
+    - Shows 10-day forecast
+    - Alerts via Telegram
     """)
 
 # --------------------
-# Analysis loop + CSV export
+# Analysis loop
 # --------------------
-st.subheader("Live / Historical scan & scoring (all NIFTY50)")
+st.subheader("Live Scan & Scores")
 progress = st.progress(0)
-results = []
-all_data = {}
-forecast_data = {}
+results, all_data, forecast_data = [], {}, {}
 
 symbols = [s + ".NS" for s in NIFTY50]
 total = len(symbols)
@@ -146,79 +144,66 @@ CSV_DIR = "daily_csv"
 os.makedirs(CSV_DIR, exist_ok=True)
 
 for i, sym in enumerate(symbols, 1):
-    progress.progress(int(i*100/total))
+    progress.progress(int(i * 100 / total))
     try:
         info = fetch_and_analyze(sym, trend_minutes=30, forecast_days=10)
         if info is None:
             continue
 
-        # store raw df for CSV
         df_stock = info['df']
         all_data[sym] = df_stock
         df_stock.to_csv(f"{CSV_DIR}/{sym}_{today_date}.csv", index=False)
-
-        # store 10-day forecast
         forecast_data[sym] = info.get('future_10_days', {})
 
-        # portfolio calculations
         in_port = sym in portfolio
         entry_price = portfolio[sym]['entry_price'] if in_port else None
         qty = portfolio[sym]['quantity'] if in_port else None
-        pl = (info['current_price'] - entry_price) * qty if in_port and entry_price else None
+        pl = (info['current_price'] - entry_price) * qty if in_port else None
 
         results.append({
             "symbol": sym,
-            "score": info.get('score', None),
-            "signal": info.get('signal', None),
-            "price": info.get('current_price', None),
-            "future_potential": info.get('future_potential', None),
-            "datetime": info.get('datetime', None),
+            "score": info.get('score'),
+            "signal": info.get('signal'),
+            "price": info.get('current_price'),
+            "future_potential": info.get('future_potential'),
+            "datetime": info.get('datetime'),
             "in_portfolio": in_port,
             "entry_price": entry_price,
             "qty": qty,
             "pl": pl
         })
     except Exception as e:
-        print(f"Error analyzing {sym}: {e}")
-    time.sleep(0.2)
+        st.error(f"Error analyzing {sym}: {e}")
+    time.sleep(0.1)
 
-# --------------------
-# Safe DataFrame creation
-# --------------------
 valid_results = [r for r in results if r.get("score") is not None]
 if valid_results:
     df_res = pd.DataFrame(valid_results).sort_values("score", ascending=False).reset_index(drop=True)
 else:
     df_res = pd.DataFrame()
-    st.warning("No valid stock data available. Check API or data provider.")
+    st.warning("⚠️ No valid stock data available. Check API.")
 
 # --------------------
-# Telegram Alerts button
+# Telegram Alerts
 # --------------------
 if not df_res.empty:
     st.subheader("📩 Telegram Alerts")
     top_10 = df_res.head(10)
-    msg = "🔥 Top 10 Buys Today 🔥\n\n"
+    msg = "🔥 Top 10 Stocks Today 🔥\n\n"
     for idx, row in top_10.iterrows():
-        msg += f"{idx+1}. {row['symbol']} | Price: ₹{row['price']:.2f} | Score: {row['score']:.2f} | Signal: {row['signal']}\n"
+        msg += f"{idx+1}. {row['symbol']} | ₹{row['price']:.2f} | Score {row['score']:.2f} | {row['signal']}\n"
 
-    if st.button("🚀 Send Top 10 Buys to Telegram"):
+    if st.button("🚀 Send to Telegram"):
         send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
-        st.success("✅ Top 10 Buys sent to Telegram")
+        st.success("✅ Message sent to Telegram")
+
+    st.subheader("Top 10 Table")
+    st.table(top_10[["symbol", "price", "score", "signal"]])
 
 # --------------------
-# Display Top 10 Buys on Streamlit
+# 10-Day Forecast
 # --------------------
-st.subheader("Top priority to BUY (today, by composite score)")
-if not df_res.empty:
-    st.table(df_res.head(10)[["symbol","price","score","signal"]])
-else:
-    st.info("No valid stock data to display.")
-
-# --------------------
-# 10-Day Forecast display
-# --------------------
-st.subheader("📈 10-Day Forecast (% change) per stock")
+st.subheader("📈 10-Day Forecast (% change)")
 for sym, forecast in forecast_data.items():
     st.markdown(f"**{sym}**")
     if forecast:
@@ -232,40 +217,28 @@ for sym, forecast in forecast_data.items():
         st.info("No forecast available")
 
 # --------------------
-# CSV download
+# Stop-loss & Sell alerts
 # --------------------
-st.subheader("Download CSV of fetched data")
-for sym, df_stock in all_data.items():
-    csv_name = f"{sym}_{today_date}.csv"
-    csv_data = df_stock.to_csv(index=False).encode('utf-8')
-    st.download_button(label=f"Download {csv_name}", data=csv_data, file_name=csv_name, mime='text/csv')
-
-# --------------------
-# SELL / Stop-loss alerts
-# --------------------
-st.subheader("Sell / Stop-loss Alerts for your portfolio")
+st.subheader("⚠️ Portfolio Sell Alerts")
 alerts = []
 for sym in list(portfolio.keys()):
     if df_res.empty:
         continue
-    row = df_res[df_res['symbol']==sym]
+    row = df_res[df_res['symbol'] == sym]
     if row.empty:
         continue
     row = row.iloc[0]
     entry = portfolio[sym]
     current_price = row['price']
     entry_price = entry['entry_price']
-    change_pct = (current_price - entry_price)/entry_price*100
-
-    if row['future_potential'] > 0 and row['signal'] in ["SELL", "STRONG SELL"]:
-        continue
+    change_pct = (current_price - entry_price) / entry_price * 100
 
     if change_pct <= -STOP_LOSS_PERCENT:
-        msg = f"⚠️ STOP-LOSS ALERT: {sym} down {change_pct:.2f}% from entry ₹{entry_price:.2f} -> ₹{current_price:.2f}. Consider selling."
+        msg = f"⚠️ STOP-LOSS: {sym} down {change_pct:.2f}% (₹{entry_price:.2f} → ₹{current_price:.2f})"
         alerts.append(msg)
         send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
-    elif row['signal'] in ["STRONG SELL", "SELL"]:
-        msg = f"⚠️ SELL RECOMMEND: {sym} signal={row['signal']} score={row['score']} potential={row['future_potential']:.2f}%. Current ₹{current_price:.2f}"
+    elif row['signal'] in ["SELL", "STRONG SELL"]:
+        msg = f"⚠️ SELL: {sym} signal={row['signal']} score={row['score']:.2f}"
         alerts.append(msg)
         send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
 
@@ -273,10 +246,10 @@ if alerts:
     for a in alerts:
         st.warning(a)
 else:
-    st.success("No immediate sell alerts")
+    st.success("✅ No immediate sell alerts")
 
 # --------------------
 # Footer
 # --------------------
 st.markdown("---")
-st.caption("Data provider: YFinance. CSV per day saved in 'daily_csv' folder.")
+st.caption("Data source: YFinance • CSV saved in 'daily_csv'")
