@@ -1,35 +1,31 @@
+# config.py
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Broker / API keys (if you use them)
-PROVIDER_API_KEY = os.getenv("PROVIDER_API_KEY", "")
-PROVIDER_API_SECRET = os.getenv("PROVIDER_API_SECRET", "")
-PROVIDER_ACCESS_TOKEN = os.getenv("PROVIDER_ACCESS_TOKEN", "")
-
-# Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]  # hardcoded for sending only
-
-# Portfolio & money
-TOTAL_CAPITAL = 1000000
-STOP_LOSS_PERCENT = 2
-PARTIAL_SELL_PERCENT = 25
-
-# Timezone
 TIMEZONE = "Asia/Kolkata"
 
-# NIFTY50 symbols
+# NIFTY50 symbols (plain names; utils will handle .NS)
 NIFTY50 = [
-    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
-    "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE", "BHARTIARTL", "BPCL",
-    "BRITANNIA", "CIPLA", "COALINDIA", "DIVISLAB", "DRREDDY",
-    "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE",
-    "HEROMOTOCO", "HINDALCO", "HINDUNILVR", "ICICIBANK", "INDUSINDBK",
-    "INFY", "ITC", "JSWSTEEL", "KOTAKBANK", "LTIM",
-    "LT", "M&M", "MARUTI", "NESTLEIND", "NTPC",
-    "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SBIN",
-    "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM", "TATAMOTORS", "TATASTEEL",
-    "TCS", "TECHM", "TITAN", "ULTRACEMCO", "WIPRO"
+    "ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK",
+    "BAJAJ-AUTO","BAJAJFINSV","BAJFINANCE","BHARTIARTL","BPCL",
+    "BRITANNIA","CIPLA","COALINDIA","DIVISLAB","DRREDDY",
+    "EICHERMOT","GRASIM","HCLTECH","HDFCBANK","HDFCLIFE",
+    "HEROMOTOCO","HINDALCO","HINDUNILVR","ICICIBANK","INDUSINDBK",
+    "INFY","ITC","JSWSTEEL","KOTAKBANK","LTIM",
+    "LT","M&M","MARUTI","NESTLEIND","NTPC",
+    "ONGC","POWERGRID","RELIANCE","SBILIFE","SBIN",
+    "SHRIRAMFIN","SUNPHARMA","TATACONSUM","TATAMOTORS","TATASTEEL",
+    "TCS","TECHM","TITAN","ULTRACEMCO","WIPRO"
 ]
+
+# Telegram token (in Streamlit Cloud use secrets; locally use .env)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# Hardcoded chat IDs (used only for sending; NOT shown in UI)
+TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]
+
+# CSV folder
+CSV_DIR = "daily_csv"
+os.makedirs(CSV_DIR, exist_ok=True)
