@@ -193,13 +193,9 @@ else:
     st.warning("No valid stock data available. Check API or data provider.")
 
 # --------------------
-# Display Top 10 Buys on Streamlit + Telegram button
+# Telegram Alerts button
 # --------------------
-st.subheader("Top priority to BUY (today, by composite score)")
 if not df_res.empty:
-    st.table(df_res.head(10)[["symbol","price","score","signal"]])
-
-    # Telegram alerts section
     st.subheader("📩 Telegram Alerts")
     top_10 = df_res.head(10)
     msg = "🔥 Top 10 Buys Today 🔥\n\n"
@@ -210,10 +206,12 @@ if not df_res.empty:
         send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
         st.success("✅ Top 10 Buys sent to Telegram")
 
-    # Optional auto-send at 10 AM
-    current_time = datetime.now(IST)
-    if current_time.hour == 10 and current_time.minute < 5:
-        send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
+# --------------------
+# Display Top 10 Buys on Streamlit
+# --------------------
+st.subheader("Top priority to BUY (today, by composite score)")
+if not df_res.empty:
+    st.table(df_res.head(10)[["symbol","price","score","signal"]])
 else:
     st.info("No valid stock data to display.")
 
@@ -277,6 +275,8 @@ if alerts:
 else:
     st.success("No immediate sell alerts")
 
+# --------------------
 # Footer
+# --------------------
 st.markdown("---")
 st.caption("Data provider: YFinance. CSV per day saved in 'daily_csv' folder.")
