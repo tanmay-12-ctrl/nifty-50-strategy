@@ -1,50 +1,20 @@
-# utils.py (UPDATED)
+# utils.py (FULL UPDATED)
 import pandas as pd
 import numpy as np
 import pytz
 import requests
-import json
-import os
 import ta
 import yfinance as yf
-import math
-from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
+from config import TIMEZONE, TELEGRAM_BOT_TOKEN
 
 IST = pytz.timezone(TIMEZONE)
-CHAT_IDS_FILE = "chat_ids.json"
 
 # --------------------------- TELEGRAM ---------------------------
+TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]  # hardcoded chat IDs
+
 def load_chat_ids():
-    if os.path.exists(CHAT_IDS_FILE):
-        with open(CHAT_IDS_FILE, "r") as f:
-            ids = json.load(f)
-            ids = [str(i) for i in ids]
-            cfg_ids = [str(i) for i in (TELEGRAM_CHAT_IDS or [])]
-            return list(dict.fromkeys(ids + cfg_ids))
-    return [str(i) for i in (TELEGRAM_CHAT_IDS or [])]
-
-def save_chat_ids(ids):
-    ids = [str(i) for i in ids]
-    with open(CHAT_IDS_FILE, "w") as f:
-        json.dump(ids, f, indent=2)
-
-def auto_add_new_chats():
-    if not TELEGRAM_BOT_TOKEN:
-        return load_chat_ids()
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    chat_ids = load_chat_ids()
-    try:
-        r = requests.get(url, timeout=6).json()
-        for item in r.get("result", []):
-            msg = item.get("message") or item.get("edited_message") or {}
-            chat = msg.get("chat") or {}
-            chat_id = chat.get("id")
-            if chat_id and str(chat_id) not in chat_ids:
-                chat_ids.append(str(chat_id))
-        save_chat_ids(chat_ids)
-    except Exception as e:
-        print("auto_add_new_chats failed:", e)
-    return chat_ids
+    # Only return hardcoded IDs
+    return [str(i) for i in TELEGRAM_CHAT_IDS]
 
 def send_telegram_message(bot_token, message, chat_ids=None):
     results = {}
@@ -170,3 +140,29 @@ def fetch_and_analyze(symbol, trend_minutes=30, forecast_days=10, interval="5m")
         "df": df,
         "fundamentals": fundamentals
     }
+
+# --------------------------- TOP 10 BY % CHANGE ---------------------------
+def get_top10_by_percent(nifty50_symbols):
+    stocks_data = []
+    for symbol in nifty50_symbols:
+        df = fetch_intraday_yfinance(symbol, period="1d", interval="5m")
+        if df is None or df.empty: 
+            continue
+        latest = df.iloc[-1]
+        open_price = df['open'].iloc[0]
+        percent_change = ((latest['close'] - open_price)/open_price)*100
+        stocks_data.append({
+            "symbol": symbol,
+            "current_price": float(latest['close']),
+            "percent_change": percent_change
+        })
+    top10 = sorted(stocks_data, key=lambda x: x['percent_change'], reverse=True)[:10]
+    return top10
+
+def send_top10_telegram(nifty50_symbols):
+    top10 = get_top10_by_percent(nifty50_symbols)
+    message = "<b>Top 10 Nifty 50 Stocks Today</b>\n\n"
+    for i, stock in enumerate(top10, 1):
+        sign = "+" if stock['percent_change'] >= 0 else ""
+        message += f"{i}. {stock['symbol']} | {sign}{stock['percent_change']:.2f}% | ₹{stock['current_price']}\n"
+    send_telegram_message(TELEGRAM_BOT_TOKEN, message)
