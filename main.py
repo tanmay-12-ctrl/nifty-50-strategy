@@ -193,12 +193,11 @@ else:
     st.warning("No valid stock data available. Check API or data provider.")
 
 # --------------------
-# Send Top 10 Buys to Telegram at 10 AM
+# Send Top 10 Buys to Telegram (NOW whenever refreshed)
 # --------------------
-current_time = datetime.now(IST)
-if not df_res.empty and current_time.hour == 10 and current_time.minute < 5:
+if not df_res.empty:
     top_10 = df_res.head(10)
-    msg = "🔥 Top 10 Buys Today 🔥\n\n"
+    msg = "🔥 Top 10 Buys (Refreshed) 🔥\n\n"
     for idx, row in top_10.iterrows():
         msg += f"{idx+1}. {row['symbol']} | Price: ₹{row['price']:.2f} | Score: {row['score']:.2f} | Signal: {row['signal']}\n"
     send_telegram_message(TELEGRAM_BOT_TOKEN, msg, TELEGRAM_CHAT_IDS)
