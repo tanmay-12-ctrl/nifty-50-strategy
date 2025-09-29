@@ -34,7 +34,7 @@ def send_telegram_message(bot_token, message, chat_ids=None):
     return results
 
 # ---------------- YFINANCE SAFE FETCH ----------------
-def safe_yf_download(yf_symbol, period="1d", interval="5m", max_retries=2, sleep_between=1.0):
+def safe_yf_download(yf_symbol, period="1d", interval="5m", max_retries=3, sleep_between=1.0):
     for attempt in range(max_retries):
         try:
             df = yf.download(yf_symbol, period=period, interval=interval, progress=False, threads=False)
@@ -44,14 +44,15 @@ def safe_yf_download(yf_symbol, period="1d", interval="5m", max_retries=2, sleep
                 time.sleep(sleep_between)
                 continue
             return df
-        except Exception:
+        except Exception as e:
+            print(f"safe_yf_download error for {yf_symbol}: {e}")
             time.sleep(sleep_between)
-            continue
     return None
 
 def fetch_intraday_yfinance(symbol, period="1d", interval="5m"):
     yf_symbol = f"{symbol}.NS"
-    df = safe_yf_download(yf_symbol, period=period, interval=interval, max_retries=3, sleep_between=0.8)
+    df = safe_yf_download(yf_symbol, period=period, interval=interval)
+    
     if df is None or df.empty:
         # fallback to previous day's CSV
         csv_path = os.path.join(CSV_DIR, f"{yf_symbol}_latest.csv")
@@ -61,15 +62,27 @@ def fetch_intraday_yfinance(symbol, period="1d", interval="5m"):
             return None
     else:
         df = df.reset_index()
-        df.columns = [c.lower() for c in df.columns]
-        if 'adj close' in df.columns and 'close' not in df.columns:
-            df = df.rename(columns={'adj close': 'close'})
-        for col in ["datetime","open","high","low","close","volume"]:
-            if col not in df.columns:
-                df[col] = np.nan
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df = df.sort_values("datetime").dropna(subset=["close"]).reset_index(drop=True)
-        df.to_csv(os.path.join(CSV_DIR, f"{yf_symbol}_latest.csv"), index=False)
+    
+    # Normalize column names
+    df.columns = [str(c).lower().strip() for c in df.columns]
+
+    # Fix adj close
+    if 'adj close' in df.columns and 'close' not in df.columns:
+        df = df.rename(columns={'adj close':'close'})
+
+    # Ensure required columns exist
+    for col in ["datetime","open","high","low","close","volume"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    # Datetime processing
+    if 'datetime' in df.columns:
+        df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+    df = df.sort_values("datetime").dropna(subset=["close"]).reset_index(drop=True)
+
+    # Save CSV for offline fallback
+    df.to_csv(os.path.join(CSV_DIR, f"{yf_symbol}_latest.csv"), index=False)
+
     return df[["datetime","open","high","low","close","volume"]]
 
 # ---------------- INDICATORS ----------------
@@ -84,26 +97,29 @@ def calculate_indicators(df):
         if df.shape[0] >= 14:
             df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
         df['vol_avg_20'] = df['volume'].rolling(20, min_periods=1).mean()
-    except:
-        pass
+    except Exception as e:
+        print(f"calculate_indicators error: {e}")
     return df
 
 # ---------------- PERCENT CHANGE ----------------
 def get_percent_change(df):
     try:
-        if df is None or df.empty:
+        if df is None or df.empty or 'close' not in df.columns:
             return 0.0
         first = float(df['close'].iloc[0])
         last = float(df['close'].iloc[-1])
-        if first == 0: return 0.0
+        if first == 0:
+            return 0.0
         return ((last - first)/first)*100.0
-    except:
+    except Exception as e:
+        print(f"get_percent_change error: {e}")
         return 0.0
 
 # ---------------- FETCH & ANALYZE ----------------
 def fetch_and_analyze(symbol):
     df = fetch_intraday_yfinance(symbol)
     if df is None or df.empty:
+        print(f"fetch_and_analyze: no data for {symbol}")
         return None
     df = calculate_indicators(df)
     pct = get_percent_change(df)
