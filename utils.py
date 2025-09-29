@@ -1,168 +1,169 @@
-# utils.py (FULL UPDATED)
+# utils.py
+import time
 import pandas as pd
 import numpy as np
 import pytz
 import requests
-import ta
 import yfinance as yf
-from config import TIMEZONE, TELEGRAM_BOT_TOKEN
+import ta
+from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 
 IST = pytz.timezone(TIMEZONE)
 
 # --------------------------- TELEGRAM ---------------------------
-TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]  # hardcoded chat IDs
-
-def load_chat_ids():
-    # Only return hardcoded IDs
-    return [str(i) for i in TELEGRAM_CHAT_IDS]
-
 def send_telegram_message(bot_token, message, chat_ids=None):
+    """Send message to provided chat_ids or the hardcoded list."""
     results = {}
     if chat_ids is None:
-        chat_ids = load_chat_ids()
+        chat_ids = TELEGRAM_CHAT_IDS
     chat_ids = [str(c) for c in (chat_ids or [])]
     if not bot_token or not chat_ids:
+        print("send_telegram_message: missing token or chat ids")
         return results
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     for chat_id in chat_ids:
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         try:
-            resp = requests.post(url, data=payload, timeout=8)
-            resp_json = resp.json() if resp.headers.get("content-type","").startswith("application/json") else {}
-            results[chat_id] = {"ok": resp_json.get("ok", False)}
+            resp = requests.post(url, data=payload, timeout=10)
+            # safe check
+            try:
+                resp_json = resp.json()
+                results[chat_id] = {"ok": bool(resp_json.get("ok", False)), "resp": resp_json}
+            except Exception:
+                results[chat_id] = {"ok": resp.status_code == 200, "status_code": resp.status_code}
         except Exception as e:
-            results[chat_id] = {"ok": False, "exception": str(e)}
+            results[chat_id] = {"ok": False, "error": str(e)}
+    print("send_telegram_message results:", results)
     return results
 
-# --------------------------- YFINANCE DATA ---------------------------
-def fetch_intraday_yfinance(symbol, period="1d", interval="5m", max_retries=2):
-    for _ in range(max_retries):
+# --------------------------- YFINANCE SAFE FETCH ---------------------------
+def safe_yf_download(yf_symbol, period="1d", interval="5m", max_retries=2, sleep_between=1.0):
+    """Try to download yfinance data with retries and fallback to daily."""
+    for attempt in range(max_retries):
         try:
-            df = yf.download(symbol, period=period, interval=interval, progress=False, threads=False)
+            df = yf.download(yf_symbol, period=period, interval=interval, progress=False, threads=False)
             if df is None or df.empty:
+                # fallback: try a longer period with daily interval
+                df = yf.download(yf_symbol, period="5d", interval="1d", progress=False, threads=False)
+            if df is None or df.empty:
+                print(f"safe_yf_download: empty for {yf_symbol} (attempt {attempt+1})")
+                time.sleep(sleep_between)
                 continue
-            if df.index.tz is None:
-                df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
-            df = df.reset_index()
-            df.rename(columns={c: c.lower() for c in df.columns}, inplace=True)
-            df.rename(columns={"datetime":"datetime","date":"datetime","adj close":"close"}, inplace=True)
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            df = df.sort_values("datetime").dropna(subset=["close"]).reset_index(drop=True)
-            return df[["datetime","open","high","low","close","volume"]]
+            return df
         except Exception as e:
-            print(f"yfinance error {symbol}: {e}")
+            print(f"safe_yf_download error for {yf_symbol}: {e} (attempt {attempt+1})")
+            time.sleep(sleep_between)
+            continue
     return None
 
-# --------------------------- INDICATORS ---------------------------
-def compute_vwap(df):
-    tp = (df['high'] + df['low'] + df['close']) / 3
-    vwap = (tp * df['volume']).cumsum() / df['volume'].replace(0,np.nan).cumsum()
-    df['vwap'] = vwap.fillna(method="ffill").fillna(0)
-    return df
-
-def calculate_indicators(df):
-    if len(df) < 20:
-        return df
-    try:
-        df['ema20'] = ta.trend.EMAIndicator(df['close'], 20).ema_indicator()
-        df['ema50'] = ta.trend.EMAIndicator(df['close'], 50).ema_indicator()
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], 14).rsi()
-        macd = ta.trend.MACD(df['close'])
-        df['macd_hist'] = macd.macd_diff()
-        bb = ta.volatility.BollingerBands(df['close'], 20, 2)
-        df['bb_high'], df['bb_low'] = bb.bollinger_hband(), bb.bollinger_lband()
-        df['atr'] = ta.volatility.AverageTrueRange(df['high'],df['low'],df['close'],14).average_true_range()
-        df['adx'] = ta.trend.ADXIndicator(df['high'],df['low'],df['close'],14).adx()
-        df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
-        df['roc'] = ta.momentum.ROCIndicator(df['close'], 9).roc()
-        df = compute_vwap(df)
-        df['vol_avg_20'] = df['volume'].rolling(20).mean()
-    except Exception as e:
-        print("indicator error:", e)
-    return df
-
-# --------------------------- SCORING ---------------------------
-def score_stock(df):
-    if df is None or df.empty: return 0
-    latest = df.iloc[-1]
-    score = 0
-
-    if latest.get("ema20",0) > latest.get("ema50",0): score += 20
-    if latest.get("macd_hist",0) > 0: score += 10
-    if 30 < latest.get("rsi",50) < 60: score += 12
-    elif latest.get("rsi",0) < 30: score += 8
-    elif latest.get("rsi",100) < 75: score += 6
-    if latest.get("volume",0) > 1.5 * latest.get("vol_avg_20",1): score += 15
-    if latest.get("close",0) > latest.get("vwap",0): score += 10
-    if latest.get("adx",0) > 25: score += 10
-    return max(0,min(100,int(score)))
-
-def classify_signal(score, df):
-    if score >= 75: return "STRONG BUY"
-    if score >= 60: return "BUY"
-    if score >= 45: return "HOLD"
-    return "SELL"
-
-# --------------------------- FUTURE PROJECTION ---------------------------
-def compute_future_potential(df, days=10):
-    if len(df)<2: return {i+1:0 for i in range(days)}
-    avg = df['close'].pct_change().dropna().mean()
-    return {i+1: avg*100*(i+1) for i in range(days)}
-
-# --------------------------- WRAPPER ---------------------------
-def fetch_and_analyze(symbol, trend_minutes=30, forecast_days=10, interval="5m"):
-    df = fetch_intraday_yfinance(symbol, "1d", interval)
+def fetch_intraday_yfinance(symbol, period="1d", interval="5m"):
+    """
+    Return dataframe with columns datetime, open, high, low, close, volume.
+    Accepts symbol WITHOUT .NS; function will append .NS.
+    """
+    yf_symbol = f"{symbol}.NS"
+    df = safe_yf_download(yf_symbol, period=period, interval=interval, max_retries=3, sleep_between=0.8)
     if df is None or df.empty:
         return None
-    df = calculate_indicators(df)
-    score = score_stock(df)
-    signal = classify_signal(score, df)
-    fundamentals = {}
+    # Ensure tz-aware index and columns normalized
     try:
-        info = yf.Ticker(symbol).info
-        fundamentals = {
-            "PE_ratio": info.get("trailingPE"),
-            "EPS": info.get("trailingEps"),
-            "Market_Cap": info.get("marketCap")
-        }
-    except: pass
-    past_price = df['close'].iloc[-trend_minutes] if len(df)>trend_minutes else df['close'].iloc[0]
-    future_potential = (df['close'].iloc[-1]-past_price)/past_price*100 if past_price else 0
-    return {
-        "symbol": symbol,
-        "score": score,
-        "signal": signal,
-        "current_price": float(df['close'].iloc[-1]),
-        "datetime": str(df['datetime'].iloc[-1]),
-        "future_potential": future_potential,
-        "future_10_days": compute_future_potential(df, forecast_days),
-        "df": df,
-        "fundamentals": fundamentals
-    }
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
+    except Exception:
+        pass
+    df = df.reset_index()
+    df.columns = [c.lower() for c in df.columns]
+    # Some downloads return 'adj close' rather than 'close' - normalize
+    if 'adj close' in df.columns and 'close' not in df.columns:
+        df = df.rename(columns={'adj close': 'close'})
+    # Ensure required cols exist
+    for col in ["datetime", "open", "high", "low", "close", "volume"]:
+        if col not in df.columns:
+            df[col] = np.nan
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = df.sort_values("datetime").dropna(subset=["close"]).reset_index(drop=True)
+    return df[["datetime", "open", "high", "low", "close", "volume"]]
 
-# --------------------------- TOP 10 BY % CHANGE ---------------------------
-def get_top10_by_percent(nifty50_symbols):
-    stocks_data = []
-    for symbol in nifty50_symbols:
-        df = fetch_intraday_yfinance(symbol, period="1d", interval="5m")
-        if df is None or df.empty: 
-            continue
-        latest = df.iloc[-1]
-        open_price = df['open'].iloc[0]
-        percent_change = ((latest['close'] - open_price)/open_price)*100
-        stocks_data.append({
-            "symbol": symbol,
-            "current_price": float(latest['close']),
-            "percent_change": percent_change
-        })
-    top10 = sorted(stocks_data, key=lambda x: x['percent_change'], reverse=True)[:10]
-    return top10
+# --------------------------- INDICATORS ---------------------------
+def calculate_indicators(df):
+    """Add basic indicators safely (does nothing if too short)."""
+    try:
+        if df.shape[0] < 3:
+            return df
+        # work on a copy
+        df = df.copy()
+        # EMA/R SI only when enough rows
+        if df.shape[0] >= 20:
+            try:
+                df['ema20'] = ta.trend.EMAIndicator(df['close'], window=20).ema_indicator()
+                df['ema50'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
+            except Exception as e:
+                print("ema error:", e)
+        if df.shape[0] >= 14:
+            try:
+                df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+            except Exception as e:
+                print("rsi error:", e)
+        # simple rolling avg of volume
+        df['vol_avg_20'] = df['volume'].rolling(20, min_periods=1).mean()
+    except Exception as e:
+        print("calculate_indicators error:", e)
+    return df
 
-def send_top10_telegram(nifty50_symbols):
-    top10 = get_top10_by_percent(nifty50_symbols)
-    message = "<b>Top 10 Nifty 50 Stocks Today</b>\n\n"
-    for i, stock in enumerate(top10, 1):
-        sign = "+" if stock['percent_change'] >= 0 else ""
-        message += f"{i}. {stock['symbol']} | {sign}{stock['percent_change']:.2f}% | ₹{stock['current_price']}\n"
-    send_telegram_message(TELEGRAM_BOT_TOKEN, message)
+# --------------------------- PERCENT CHANGE ---------------------------
+def get_percent_change(df):
+    """Percent change since first available (open of the period) to latest close."""
+    try:
+        if df is None or df.empty:
+            return 0.0
+        first = float(df['close'].iloc[0])
+        last = float(df['close'].iloc[-1])
+        if first == 0:
+            return 0.0
+        return ((last - first) / first) * 100.0
+    except Exception:
+        return 0.0
+
+# --------------------------- FETCH & ANALYZE ---------------------------
+def fetch_and_analyze(symbol):
+    """
+    symbol: plain symbol like 'RELIANCE' or 'M&M'
+    returns dict with percent_change, current_price, df
+    """
+    df = fetch_intraday_yfinance(symbol, period="1d", interval="5m")
+    if df is None or df.empty:
+        # final attempt: try daily 5d / 1d interval inside fetch_intraday_yfinance fallback
+        print(f"fetch_and_analyze: no data for {symbol}")
+        return None
+    df = calculate_indicators(df)
+    pct = get_percent_change(df)
+    current_price = float(df['close'].iloc[-1])
+    return {"symbol": symbol, "percent_change": pct, "current_price": current_price, "df": df}
+
+# --------------------------- TOP 10 ---------------------------
+def get_top10_by_percent(symbols):
+    """Fetch symbols serially (safer on hosted envs) and return top 10 by percent change."""
+    results = []
+    for s in symbols:
+        try:
+            info = fetch_and_analyze(s)
+            if info:
+                results.append(info)
+        except Exception as e:
+            print(f"get_top10_by_percent error for {s}: {e}")
+    # sort desc by percent change
+    results.sort(key=lambda x: x.get('percent_change', 0.0), reverse=True)
+    return results[:10]
+
+def send_top10_telegram(symbols):
+    top10 = get_top10_by_percent(symbols)
+    if not top10:
+        msg = "<b>No Top-10 data available right now (yfinance returned no data)</b>"
+        return send_telegram_message(TELEGRAM_BOT_TOKEN, msg)
+    message = "<b>🔥 Top 10 Nifty 50 Stocks (by % change) 🔥</b>\n\n"
+    for i, s in enumerate(top10, 1):
+        pct = s.get('percent_change', 0.0)
+        sign = "+" if pct >= 0 else ""
+        message += f"{i}. {s['symbol']} | {sign}{pct:.2f}% | ₹{s['current_price']:.2f}\n"
+    return send_telegram_message(TELEGRAM_BOT_TOKEN, message)
