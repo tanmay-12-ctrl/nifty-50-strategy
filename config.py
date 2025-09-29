@@ -3,6 +3,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Broker / API keys (if you use them)
+PROVIDER_API_KEY = os.getenv("PROVIDER_API_KEY", "")
+PROVIDER_API_SECRET = os.getenv("PROVIDER_API_SECRET", "")
+PROVIDER_ACCESS_TOKEN = os.getenv("PROVIDER_ACCESS_TOKEN", "")
+
+# Telegram
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]  # hardcoded for sending only
+
+# Portfolio & money
+TOTAL_CAPITAL = 1000000
+STOP_LOSS_PERCENT = 2
+PARTIAL_SELL_PERCENT = 25
+
 # Timezone
 TIMEZONE = "Asia/Kolkata"
 
@@ -19,12 +33,3 @@ NIFTY50 = [
     "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM", "TATAMOTORS", "TATASTEEL",
     "TCS", "TECHM", "TITAN", "ULTRACEMCO", "WIPRO"
 ]
-
-# Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # from .env
-# Hardcoded chat IDs only for sending messages, not shown in UI
-TELEGRAM_CHAT_IDS = ["1438699528", "5719791363"]
-
-# CSV storage folder
-CSV_DIR = "daily_csv"
-os.makedirs(CSV_DIR, exist_ok=True)

@@ -1,108 +1,116 @@
-import os
 import time
 import pandas as pd
 import numpy as np
 import pytz
 import requests
+import os
 import yfinance as yf
 import ta
-from datetime import datetime
-from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS, CSV_DIR
+from config import TIMEZONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 
 IST = pytz.timezone(TIMEZONE)
+CSV_DIR = "daily_csv"
+os.makedirs(CSV_DIR, exist_ok=True)
 
 # ---------------- TELEGRAM ----------------
 def send_telegram_message(bot_token, message, chat_ids=None):
     results = {}
     if chat_ids is None:
         chat_ids = TELEGRAM_CHAT_IDS
-    chat_ids = [str(c) for c in chat_ids]
-    if not bot_token or not chat_ids:
-        print("send_telegram_message: missing token or chat ids")
-        return results
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     for chat_id in chat_ids:
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         try:
-            resp = requests.post(url, data=payload, timeout=10)
-            results[chat_id] = {"ok": resp.status_code == 200, "status_code": resp.status_code}
+            resp = requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+                timeout=10
+            )
+            try:
+                resp_json = resp.json()
+                results[chat_id] = {"ok": resp_json.get("ok", False), "resp": resp_json}
+            except:
+                results[chat_id] = {"ok": resp.status_code == 200, "status_code": resp.status_code}
         except Exception as e:
             results[chat_id] = {"ok": False, "error": str(e)}
     return results
 
-# ---------------- YFINANCE ----------------
-def safe_yf_download(symbol, period="1d", interval="5m"):
-    """Retry download, fallback to daily 5d if empty."""
-    for attempt in range(3):
+# ---------------- YFINANCE SAFE FETCH ----------------
+def safe_yf_download(yf_symbol, period="1d", interval="5m", max_retries=2, sleep_between=1.0):
+    for attempt in range(max_retries):
         try:
-            df = yf.download(symbol, period=period, interval=interval, progress=False, threads=False)
-            if df is not None and not df.empty:
-                return df
-        except:
-            time.sleep(1)
-    # fallback to daily 5d
-    try:
-        df = yf.download(symbol, period="5d", interval="1d", progress=False, threads=False)
-        if df is not None and not df.empty:
+            df = yf.download(yf_symbol, period=period, interval=interval, progress=False, threads=False)
+            if df is None or df.empty:
+                df = yf.download(yf_symbol, period="5d", interval="1d", progress=False, threads=False)
+            if df is None or df.empty:
+                time.sleep(sleep_between)
+                continue
             return df
-    except:
-        pass
+        except Exception:
+            time.sleep(sleep_between)
+            continue
     return None
 
-def fetch_intraday(symbol):
-    yf_symbol = f"{symbol}.NS" if ".NS" not in symbol else symbol
-    df = safe_yf_download(yf_symbol)
+def fetch_intraday_yfinance(symbol, period="1d", interval="5m"):
+    yf_symbol = f"{symbol}.NS"
+    df = safe_yf_download(yf_symbol, period=period, interval=interval, max_retries=3, sleep_between=0.8)
     if df is None or df.empty:
-        # fallback: try previous day CSV
-        csv_path = os.path.join(CSV_DIR, f"{symbol}.csv")
+        # fallback to previous day's CSV
+        csv_path = os.path.join(CSV_DIR, f"{yf_symbol}_latest.csv")
         if os.path.exists(csv_path):
-            df = pd.read_csv(csv_path, parse_dates=['Datetime'])
+            df = pd.read_csv(csv_path)
         else:
             return None
     else:
         df = df.reset_index()
-        df.rename(columns={c.lower(): c.lower() for c in df.columns}, inplace=True)
+        df.columns = [c.lower() for c in df.columns]
         if 'adj close' in df.columns and 'close' not in df.columns:
-            df.rename(columns={'adj close': 'close'}, inplace=True)
-        df.to_csv(os.path.join(CSV_DIR, f"{symbol}.csv"), index=False)
-    return df
+            df = df.rename(columns={'adj close': 'close'})
+        for col in ["datetime","open","high","low","close","volume"]:
+            if col not in df.columns:
+                df[col] = np.nan
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.sort_values("datetime").dropna(subset=["close"]).reset_index(drop=True)
+        df.to_csv(os.path.join(CSV_DIR, f"{yf_symbol}_latest.csv"), index=False)
+    return df[["datetime","open","high","low","close","volume"]]
 
 # ---------------- INDICATORS ----------------
 def calculate_indicators(df):
-    if df is None or df.empty:
-        return df
-    df = df.copy()
     try:
+        if df.shape[0] < 3:
+            return df
+        df = df.copy()
         if df.shape[0] >= 20:
             df['ema20'] = ta.trend.EMAIndicator(df['close'], window=20).ema_indicator()
-        if df.shape[0] >= 50:
             df['ema50'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
         if df.shape[0] >= 14:
             df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+        df['vol_avg_20'] = df['volume'].rolling(20, min_periods=1).mean()
     except:
         pass
     return df
 
-# ---------------- ANALYSIS ----------------
-def percent_change(df):
-    if df is None or df.empty:
+# ---------------- PERCENT CHANGE ----------------
+def get_percent_change(df):
+    try:
+        if df is None or df.empty:
+            return 0.0
+        first = float(df['close'].iloc[0])
+        last = float(df['close'].iloc[-1])
+        if first == 0: return 0.0
+        return ((last - first)/first)*100.0
+    except:
         return 0.0
-    first = df['close'].iloc[0]
-    last = df['close'].iloc[-1]
-    if first == 0:
-        return 0.0
-    return ((last - first) / first) * 100
 
+# ---------------- FETCH & ANALYZE ----------------
 def fetch_and_analyze(symbol):
-    df = fetch_intraday(symbol)
-    if df is None:
+    df = fetch_intraday_yfinance(symbol)
+    if df is None or df.empty:
         return None
     df = calculate_indicators(df)
-    pct = percent_change(df)
-    current_price = df['close'].iloc[-1]
-    return {"symbol": symbol, "df": df, "percent_change": pct, "current_price": current_price}
+    pct = get_percent_change(df)
+    current_price = float(df['close'].iloc[-1])
+    return {"symbol": symbol, "percent_change": pct, "current_price": current_price, "df": df}
 
+# ---------------- TOP 10 ----------------
 def get_top10_by_percent(symbols):
     results = []
     for s in symbols:
@@ -115,11 +123,11 @@ def get_top10_by_percent(symbols):
 def send_top10_telegram(symbols):
     top10 = get_top10_by_percent(symbols)
     if not top10:
-        msg = "<b>No Top-10 data available (market closed / yfinance empty)</b>"
+        msg = "<b>No Top-10 data available right now</b>"
         return send_telegram_message(TELEGRAM_BOT_TOKEN, msg)
-    message = "<b>🔥 Top 10 Nifty50 Stocks 🔥</b>\n\n"
-    for i, s in enumerate(top10, 1):
-        pct = s['percent_change']
-        sign = "+" if pct >= 0 else ""
+    message = "<b>🔥 Top 10 Nifty 50 Stocks (by % change) 🔥</b>\n\n"
+    for i,s in enumerate(top10,1):
+        pct = s.get('percent_change',0.0)
+        sign = "+" if pct>=0 else ""
         message += f"{i}. {s['symbol']} | {sign}{pct:.2f}% | ₹{s['current_price']:.2f}\n"
     return send_telegram_message(TELEGRAM_BOT_TOKEN, message)
